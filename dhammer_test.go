@@ -194,3 +194,25 @@ func Test_Order(t *testing.T) {
 		})
 	}
 }
+
+func Test_LargerInChanSize(t *testing.T) {
+	batchCount.Store(0)
+	biggestBatchSize.Store(0)
+
+	h := NewHammer(1, 1, passSlow, SetInChanSize(10000))
+	ctx := context.Background()
+
+	h.Start(ctx)
+	aft := time.After(10 * time.Millisecond)
+	for i := 0; i < 10000; i++ {
+		select {
+		case h.In <- i:
+		case <-aft:
+			t.Error("timed out while inserting jobs into hammer")
+			return
+		}
+	}
+
+	assert.Equal(t, int32(1), biggestBatchSize.Load())
+
+}

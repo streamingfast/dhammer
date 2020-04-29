@@ -31,6 +31,7 @@ func NewHammer(batchSize, maxConcurrency int, hammerFunc HammerFunc, options ...
 		Out:        make(chan interface{}),
 		decoupler:  make(chan chan interface{}, maxConcurrency),
 		hammerFunc: hammerFunc,
+		batchSize:  batchSize,
 	}
 
 	for _, option := range options {
@@ -61,6 +62,7 @@ type Hammer struct {
 	decoupler         chan chan interface{}
 	hammerFunc        HammerFunc
 	firstBatchUnitary bool
+	batchSize         int
 }
 
 type HammerFunc func(context.Context, []interface{}) ([]interface{}, error)
@@ -70,6 +72,11 @@ type HammerOption = func(h *Hammer)
 func FirstBatchUnitary() HammerOption {
 	return func(h *Hammer) {
 		h.firstBatchUnitary = true
+	}
+}
+func SetInChanSize(size int) HammerOption {
+	return func(h *Hammer) {
+		h.In = make(chan interface{}, size)
 	}
 }
 
@@ -101,7 +108,7 @@ func (h *Hammer) runInput(ctx context.Context) {
 				}
 				inflight = append(inflight, next)
 			}
-			if len(h.In) < 1 || len(inflight) >= cap(h.In) {
+			if len(h.In) < 1 || len(inflight) >= h.batchSize {
 				break
 			}
 			if sendImmediately {
