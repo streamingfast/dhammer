@@ -83,6 +83,7 @@ func FirstBatchUnitary() HammerOption {
 		h.firstBatchUnitary = true
 	}
 }
+
 func SetInChanSize(size int) HammerOption {
 	return func(h *Hammer) {
 		h.In = make(chan interface{}, size)
