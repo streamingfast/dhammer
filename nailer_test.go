@@ -19,12 +19,17 @@ func init() {
 	if os.Getenv("TRACE") == "true" {
 		traceEnabled = true
 	}
+}
+
+func setupLogger() *zap.Logger{
+	logger := zap.NewNop()
 	if os.Getenv("DEBUG") == "true" {
-		logger, _ := zap.NewDevelopment()
+		logger, _ = zap.NewDevelopment()
 		logging.Override(logger)
 	}
-
+	return logger
 }
+
 var testNailerPassThrough = func(_ context.Context, i interface{}) (interface{}, error) {
 	processedCount.Inc()
 	return i, nil
@@ -78,7 +83,7 @@ func Test_Nailer(t *testing.T) {
 	for _, test := range testCases {
 		t.Run(test.name, func(t *testing.T) {
 			defer func() { processedCount.Store(0) }()
-			n := NewNailer(test.maxConcurrency, test.fnc)
+			n := NewNailer(test.maxConcurrency, test.fnc, setupLogger())
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
@@ -140,7 +145,7 @@ func Test_Drain(t *testing.T) {
 		inputs[i] = input
 	}
 	t.Run("testing drain function", func(t *testing.T) {
-		n := NewNailer(1, testNailerPassThrough)
+		n := NewNailer(1, testNailerPassThrough, setupLogger())
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		n.PushAll(ctx, inputs)
