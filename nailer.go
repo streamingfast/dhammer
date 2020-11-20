@@ -2,24 +2,24 @@ package dhammer
 
 import (
 	"context"
+	"io"
+
 	"github.com/dfuse-io/shutter"
 	"go.uber.org/zap"
-	"io"
 )
 
 type Nailer struct {
 	*shutter.Shutter
-	ctx context.Context
-	In                chan interface{}
-	Out               chan interface{}
-	decoupler         chan chan interface{}
-	nailerFunc        NailerFunc
-	logger *zap.Logger
+	ctx        context.Context
+	In         chan interface{}
+	Out        chan interface{}
+	decoupler  chan chan interface{}
+	nailerFunc NailerFunc
+	logger     *zap.Logger
 }
 
 type NailerFunc func(context.Context, interface{}) (interface{}, error)
 type NailerOption = func(h *Nailer)
-
 
 func NewNailer(maxConcurrency int, nailerFunc NailerFunc, logger *zap.Logger) *Nailer {
 	return &Nailer{
@@ -28,7 +28,7 @@ func NewNailer(maxConcurrency int, nailerFunc NailerFunc, logger *zap.Logger) *N
 		Out:        make(chan interface{}),
 		decoupler:  make(chan chan interface{}, maxConcurrency),
 		nailerFunc: nailerFunc,
-		logger: logger,
+		logger:     logger,
 	}
 }
 
@@ -48,20 +48,19 @@ func (n *Nailer) PushAll(ctx context.Context, out []interface{}) {
 	}()
 }
 
-
 func (n *Nailer) Drain() {
 	go func() {
 		for {
-			<- n.Out
+			<-n.Out
 		}
 	}()
 	select {
-		case <-n.ctx.Done():
-			n.logger.Debug("input reader context done")
-			return
-		case <-n.Terminating():
-			n.logger.Debug("input reader shutter terminating")
-			return
+	case <-n.ctx.Done():
+		n.logger.Debug("input reader context done")
+		return
+	case <-n.Terminating():
+		n.logger.Debug("input reader shutter terminating")
+		return
 	}
 }
 
@@ -92,12 +91,10 @@ func (n *Nailer) runInput() {
 		}
 
 		if traceEnabled {
-			n.logger.Debug("input reader sending  input, breaking loop",
-				zap.Any("data", toProcess),
-			)
+			n.logger.Debug("input reader sending  input, breaking loop", zap.Any("data", toProcess))
 		}
 
-		if (closed) {
+		if closed {
 			n.logger.Debug("input reader no more input to process and channel closed, closing decoupler")
 			close(n.decoupler)
 			return
@@ -116,8 +113,6 @@ func (n *Nailer) runInput() {
 			go n.processInput(toProcess, processOut)
 		}
 	}
-
-	return
 }
 
 func (n *Nailer) processInput(in interface{}, out chan interface{}) {
@@ -144,7 +139,6 @@ func (n *Nailer) linearizeOutput() {
 	}()
 
 	for {
-		n.logger.Debug("")
 		select {
 		case <-n.ctx.Done():
 			n.logger.Debug("linearizer context done")
@@ -167,7 +161,6 @@ func (n *Nailer) linearizeOutput() {
 		}
 	}
 }
-
 
 func (n *Nailer) outputSingleBatch(ch chan interface{}) error {
 	for {
@@ -192,7 +185,6 @@ func (n *Nailer) outputSingleBatch(ch chan interface{}) error {
 		}
 	}
 }
-
 
 func (n *Nailer) safelySend(obj interface{}, out chan interface{}) error {
 	select {

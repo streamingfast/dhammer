@@ -17,19 +17,10 @@ package dhammer
 import (
 	"context"
 	"io"
-	"os"
 
 	"github.com/dfuse-io/shutter"
 	"go.uber.org/zap"
 )
-
-var traceEnabled = false
-
-func init() {
-	if os.Getenv("TRACE") == "true" {
-		traceEnabled = true
-	}
-}
 
 // NewHammer returns a single-use batcher
 // startSingle will force batcher to run the first batch with a single object in it
