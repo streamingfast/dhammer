@@ -32,6 +32,7 @@ func NewHammer(batchSize, maxConcurrency int, hammerFunc HammerFunc, options ...
 		decoupler:  make(chan chan interface{}, maxConcurrency),
 		hammerFunc: hammerFunc,
 		batchSize:  batchSize,
+		logger:     zlog,
 	}
 
 	for _, option := range options {
@@ -63,6 +64,8 @@ type Hammer struct {
 	hammerFunc        HammerFunc
 	firstBatchUnitary bool
 	batchSize         int
+
+	logger *zap.Logger
 }
 
 type HammerFunc func(context.Context, []interface{}) ([]interface{}, error)
@@ -78,6 +81,12 @@ func FirstBatchUnitary() HammerOption {
 func SetInChanSize(size int) HammerOption {
 	return func(h *Hammer) {
 		h.In = make(chan interface{}, size)
+	}
+}
+
+func HammerLogger(logger *zap.Logger) HammerOption {
+	return func(h *Hammer) {
+		h.logger = logger
 	}
 }
 
@@ -98,15 +107,15 @@ func (h *Hammer) runInput(ctx context.Context) {
 		for {
 			select {
 			case <-ctx.Done():
-				zlog.Debug("input reader context done")
+				h.logger.Debug("input reader context done")
 				h.Shutdown(ctx.Err())
 				return
 			case <-h.Terminating():
-				zlog.Debug("input reader shutter terminating")
+				h.logger.Debug("input reader shutter terminating")
 				return
 			case next, ok := <-h.In:
 				if !ok {
-					zlog.Debug("input reader channel closed")
+					h.logger.Debug("input reader channel closed")
 					closed = true
 					break
 				}
@@ -114,19 +123,19 @@ func (h *Hammer) runInput(ctx context.Context) {
 			}
 			if len(h.In) <= 0 || len(inflight) >= h.batchSize {
 				if traceEnabled {
-					zlog.Debug("input reader breaking loop")
+					h.logger.Debug("input reader breaking loop")
 				}
 
 				break
 			}
 			if sendImmediately {
-				zlog.Debug("input reader sending immediately first input, breaking loop")
+				h.logger.Debug("input reader sending immediately first input, breaking loop")
 				sendImmediately = false
 				break
 			}
 		}
 		if len(inflight) == 0 && closed {
-			zlog.Debug("input reader no more inflight and channel closed, closing decoupler")
+			h.logger.Debug("input reader no more inflight and channel closed, closing decoupler")
 			close(h.decoupler)
 			return
 		}
@@ -134,17 +143,17 @@ func (h *Hammer) runInput(ctx context.Context) {
 		batchOut := make(chan interface{}, len(inflight))
 		select {
 		case <-ctx.Done():
-			zlog.Debug("input reader batch out context done")
+			h.logger.Debug("input reader batch out context done")
 			h.Shutdown(ctx.Err())
 			return
 		case <-h.Terminating():
-			zlog.Debug("input reader batch out shutter terminating")
+			h.logger.Debug("input reader batch out shutter terminating")
 			return
 		case h.decoupler <- batchOut:
 			go h.processBatch(ctx, inflight, batchOut)
 		}
 		if closed {
-			zlog.Debug("input reader batch out closed, closing decoupler")
+			h.logger.Debug("input reader batch out closed, closing decoupler")
 			close(h.decoupler)
 			return
 		}
@@ -178,27 +187,27 @@ func (h *Hammer) safelySend(ctx context.Context, obj interface{}, out chan inter
 
 func (h *Hammer) linearizeOutput(ctx context.Context) {
 	defer func() {
-		zlog.Debug("linearizer terminated, closing out channel")
+		h.logger.Debug("linearizer terminated, closing out channel")
 		close(h.Out)
 	}()
 
 	for {
 		select {
 		case <-ctx.Done():
-			zlog.Debug("linearizer context done")
+			h.logger.Debug("linearizer context done")
 			h.Shutdown(ctx.Err())
 			return
 		case <-h.Terminating():
-			zlog.Debug("linearizer shutter terminating")
+			h.logger.Debug("linearizer shutter terminating")
 			return
 		case ch, ok := <-h.decoupler:
 			if !ok {
-				zlog.Debug("linearizer decoupler channel closed, shutting down")
+				h.logger.Debug("linearizer decoupler channel closed, shutting down")
 				h.Shutdown(nil)
 				return
 			}
 			if err := h.outputSingleBatch(ctx, ch); err != nil {
-				zlog.Debug("linearizer output single batch error, shutting down", zap.Error(err))
+				h.logger.Debug("linearizer output single batch error, shutting down", zap.Error(err))
 				h.Shutdown(err)
 				return
 			}
@@ -210,16 +219,16 @@ func (h *Hammer) outputSingleBatch(ctx context.Context, ch chan interface{}) err
 	for {
 		select {
 		case <-ctx.Done():
-			zlog.Debug("single batch context done")
+			h.logger.Debug("single batch context done")
 			h.Shutdown(ctx.Err())
 			return ctx.Err()
 		case <-h.Terminating():
-			zlog.Debug("single batch shutter terminating")
+			h.logger.Debug("single batch shutter terminating")
 			return io.EOF
 		case obj := <-ch:
 			if obj == nil {
 				if traceEnabled {
-					zlog.Debug("single batch channel received null, nothing more to process")
+					h.logger.Debug("single batch channel received null, nothing more to process")
 				}
 				return nil // done
 			}
