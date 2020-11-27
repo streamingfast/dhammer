@@ -2,6 +2,7 @@ package dhammer
 
 import (
 	"context"
+	"fmt"
 	"io"
 
 	"github.com/dfuse-io/shutter"
@@ -60,6 +61,21 @@ func (n *Nailer) Start(ctx context.Context) {
 	go n.linearizeOutput()
 }
 
+func (n *Nailer) Push(ctx context.Context, in interface{}) {
+	select {
+	case n.In <- in:
+	case <-n.Terminating():
+		n.logger.Debug("unable to push since nailer is terminating")
+		return
+	case <-ctx.Done():
+		n.logger.Debug("unable to push since caller's context is done")
+		return
+	case <-n.ctx.Done():
+		n.logger.Debug("unable to push since nailer's context is done")
+		return
+	}
+}
+
 func (n *Nailer) PushAll(ctx context.Context, ins []interface{}) {
 	n.Start(ctx)
 	go func() {
@@ -98,12 +114,18 @@ func (n *Nailer) Drain() {
 			<-n.Out
 		}
 	}()
+
+	fmt.Println("Draining", n.IsTerminated(), n.IsTerminating(), n.Err())
+
 	select {
 	case <-n.ctx.Done():
 		n.logger.Debug("input reader context done")
 		return
 	case <-n.Terminating():
 		n.logger.Debug("input reader shutter terminating")
+		return
+	case <-n.Terminated():
+		n.logger.Debug("input reader shutter terminated, nothing more to process")
 		return
 	}
 }
@@ -172,6 +194,7 @@ func (n *Nailer) processInput(in interface{}, out chan interface{}) {
 
 	output, err := n.nailerFunc(n.ctx, in)
 	if err != nil {
+		n.logger.Debug("nailer func returned an error, shutting down", zap.Error(err))
 		n.Shutdown(err)
 		return
 	}

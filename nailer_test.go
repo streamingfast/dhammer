@@ -2,6 +2,7 @@ package dhammer
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -154,4 +155,50 @@ func TestNailer_WaitUntilEmpty(t *testing.T) {
 	n.WaitUntilEmpty(ctx)
 	assert.Len(t, n.In, 0, "Input is not empty")
 	assert.Len(t, n.decoupler, 0, "Decoupler is not empty")
+}
+
+func TestNailer_ForwardsError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	n := NewNailer(2, func(_ context.Context, i interface{}) (interface{}, error) {
+		if i.(int) == 2 {
+			return nil, fmt.Errorf("error #%d", i.(int))
+		}
+
+		return i, nil
+	})
+	n.Start(ctx)
+
+	n.Push(ctx, 1)
+	n.Push(ctx, 2)
+	n.Push(ctx, 3)
+
+	n.Close()
+	n.Drain()
+
+	// The way it is, any of the pushed element could report an error
+	assert.NotNil(t, n.Err(), "Error should be set to something")
+	assert.Regexp(t, "^error #[0-9]+", n.Err().Error())
+}
+
+func TestNailer_WithDiscardAll_DrainEvenOnError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	n := NewNailer(8, func(_ context.Context, i interface{}) (interface{}, error) {
+		return nil, fmt.Errorf("error #%d", i.(int))
+	}, NailerDiscardAll())
+	n.Start(ctx)
+
+	for i := 0; i < 32; i++ {
+		n.Push(ctx, i)
+	}
+
+	n.Close()
+	n.Drain()
+
+	// The way it is, any of the pushed element could report an error
+	assert.NotNil(t, n.Err(), "Error should be set to something")
+	assert.Regexp(t, "^error #[0-9]+", n.Err().Error())
 }
