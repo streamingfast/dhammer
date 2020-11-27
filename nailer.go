@@ -2,7 +2,6 @@ package dhammer
 
 import (
 	"context"
-	"fmt"
 	"io"
 
 	"github.com/dfuse-io/shutter"
@@ -114,8 +113,6 @@ func (n *Nailer) Drain() {
 			<-n.Out
 		}
 	}()
-
-	fmt.Println("Draining", n.IsTerminated(), n.IsTerminating(), n.Err())
 
 	select {
 	case <-n.ctx.Done():
