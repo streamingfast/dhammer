@@ -5,7 +5,6 @@
 This is a helper library for serializing concurrent and grouped task
 results. It is useful when you want to debounce network calls that
 may or may not be grouped in a batch call.
-It is used as part of
 It is part of **[StreamingFast](https://github.com/streamingfast/streamingfast)**.
 
 
