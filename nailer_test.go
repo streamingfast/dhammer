@@ -52,7 +52,7 @@ func Test_Nailer(t *testing.T) {
 			timeoutValue:    time.Millisecond * 8,
 		},
 		{
-			name:                   "is_in_batch",
+			name:                   "is_in_batch_with_push_all",
 			inputs:                 testSequential100,
 			fnc:                    testNailerPassThrough,
 			startWithPushAll:       true,
