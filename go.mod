@@ -1,4 +1,4 @@
-module github.com/dfuse-io/dhammer
+module github.com/streamingfast/dhammer
 
 go 1.13
 
