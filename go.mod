@@ -3,7 +3,7 @@ module github.com/streamingfast/dhammer
 go 1.13
 
 require (
-	github.com/dfuse-io/logging v0.0.0-20201120222745-9988f63324bc
+	github.com/streamingfast/logging v0.0.0-20210811175431-f3b44b61606a // indirect
 	github.com/streamingfast/shutter v1.5.0 // indirect
 	github.com/stretchr/testify v1.4.0
 	go.uber.org/atomic v1.6.0
