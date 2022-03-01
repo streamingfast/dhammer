@@ -16,12 +16,6 @@ package dhammer
 
 import (
 	"github.com/streamingfast/logging"
-	"go.uber.org/zap"
 )
 
-var traceEnabled = logging.IsTraceEnabled("dhammer", "github.com/streamingfast/dhammer")
-var zlog = zap.NewNop()
-
-func init() {
-	logging.Register("github.com/streamingfast/dhammer", &zlog)
-}
+var zlog, tracer = logging.PackageLogger("dhammer", "github.com/streamingfast/dhammer")

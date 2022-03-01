@@ -122,7 +122,7 @@ func (h *Hammer) runInput(ctx context.Context) {
 				inflight = append(inflight, next)
 			}
 			if len(h.In) <= 0 || len(inflight) >= h.batchSize {
-				if traceEnabled {
+				if tracer.Enabled() {
 					h.logger.Debug("input reader breaking loop")
 				}
 
@@ -227,7 +227,7 @@ func (h *Hammer) outputSingleBatch(ctx context.Context, ch chan interface{}) err
 			return io.EOF
 		case obj := <-ch:
 			if obj == nil {
-				if traceEnabled {
+				if tracer.Enabled() {
 					h.logger.Debug("single batch channel received null, nothing more to process")
 				}
 				return nil // done
