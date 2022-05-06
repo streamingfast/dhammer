@@ -18,6 +18,7 @@ import (
 	"context"
 	"io"
 
+	"github.com/streamingfast/logging"
 	"github.com/streamingfast/shutter"
 	"go.uber.org/zap"
 )
@@ -33,6 +34,7 @@ func NewHammer(batchSize, maxConcurrency int, hammerFunc HammerFunc, options ...
 		hammerFunc: hammerFunc,
 		batchSize:  batchSize,
 		logger:     zlog,
+		tracer:     nil,
 	}
 
 	for _, option := range options {
@@ -66,6 +68,7 @@ type Hammer struct {
 	batchSize         int
 
 	logger *zap.Logger
+	tracer logging.Tracer
 }
 
 type HammerFunc func(context.Context, []interface{}) ([]interface{}, error)
@@ -87,6 +90,12 @@ func SetInChanSize(size int) HammerOption {
 func HammerLogger(logger *zap.Logger) HammerOption {
 	return func(h *Hammer) {
 		h.logger = logger
+	}
+}
+
+func HammerTracer(tracer logging.Tracer) HammerOption {
+	return func(h *Hammer) {
+		h.tracer = tracer
 	}
 }
 
@@ -122,7 +131,7 @@ func (h *Hammer) runInput(ctx context.Context) {
 				inflight = append(inflight, next)
 			}
 			if len(h.In) <= 0 || len(inflight) >= h.batchSize {
-				if tracer.Enabled() {
+				if h.tracer != nil && h.tracer.Enabled() {
 					h.logger.Debug("input reader breaking loop")
 				}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 
+	"github.com/streamingfast/logging"
 	"github.com/streamingfast/shutter"
 	"go.uber.org/zap"
 )
@@ -19,6 +20,7 @@ type Nailer struct {
 	discardAll   bool
 
 	logger *zap.Logger
+	tracer logging.Tracer
 }
 
 type NailerFunc func(context.Context, interface{}) (interface{}, error)
@@ -36,6 +38,12 @@ func NailerLogger(logger *zap.Logger) NailerOption {
 	}
 }
 
+func NailerTracer(tracer logging.Tracer) NailerOption {
+	return func(n *Nailer) {
+		n.tracer = tracer
+	}
+}
+
 func NewNailer(maxConcurrency int, nailerFunc NailerFunc, options ...NailerOption) *Nailer {
 	nailer := &Nailer{
 		Shutter:      shutter.New(),
@@ -45,6 +53,7 @@ func NewNailer(maxConcurrency int, nailerFunc NailerFunc, options ...NailerOptio
 		checkIfEmpty: make(chan bool),
 		nailerFunc:   nailerFunc,
 		logger:       zlog,
+		tracer:       nil,
 	}
 
 	for _, option := range options {
