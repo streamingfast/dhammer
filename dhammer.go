@@ -34,7 +34,7 @@ func NewHammer(batchSize, maxConcurrency int, hammerFunc HammerFunc, options ...
 		hammerFunc: hammerFunc,
 		batchSize:  batchSize,
 		logger:     zlog,
-		tracer:     nil,
+		tracer:     tracer,
 	}
 
 	for _, option := range options {
@@ -236,7 +236,7 @@ func (h *Hammer) outputSingleBatch(ctx context.Context, ch chan interface{}) err
 			return io.EOF
 		case obj := <-ch:
 			if obj == nil {
-				if tracer.Enabled() {
+				if h.tracer.Enabled() {
 					h.logger.Debug("single batch channel received null, nothing more to process")
 				}
 				return nil // done

@@ -53,7 +53,7 @@ func NewNailer(maxConcurrency int, nailerFunc NailerFunc, options ...NailerOptio
 		checkIfEmpty: make(chan bool),
 		nailerFunc:   nailerFunc,
 		logger:       zlog,
-		tracer:       nil,
+		tracer:       tracer,
 	}
 
 	for _, option := range options {
@@ -162,7 +162,7 @@ func (n *Nailer) runInput() {
 			toProcess = next
 		}
 
-		if tracer.Enabled() {
+		if n.tracer.Enabled() {
 			n.logger.Debug("input reader sending input, breaking loop", zap.Any("data", toProcess))
 		}
 
@@ -216,7 +216,7 @@ func (n *Nailer) processInput(in interface{}, out chan interface{}) {
 	case <-n.Terminating():
 		return
 	case out <- output:
-		if tracer.Enabled() {
+		if n.tracer.Enabled() {
 			n.logger.Debug("processed input, sent result to output channel")
 		}
 	}
@@ -263,7 +263,7 @@ func (n *Nailer) linearizeOutput() {
 }
 
 func (n *Nailer) outputSingleBatch(ch chan interface{}) error {
-	if tracer.Enabled() {
+	if n.tracer.Enabled() {
 		n.logger.Debug("received output channel from decoupler, waiting for channel to have a value")
 	}
 
@@ -278,13 +278,13 @@ func (n *Nailer) outputSingleBatch(ch chan interface{}) error {
 			return io.EOF
 		case obj := <-ch:
 			if obj == nil {
-				if tracer.Enabled() {
+				if n.tracer.Enabled() {
 					n.logger.Debug("single batch channel received null, nothing more to process")
 				}
 				return nil // done
 			}
 
-			if tracer.Enabled() {
+			if n.tracer.Enabled() {
 				n.logger.Debug("output channel resolved to a value, sending it to consumer")
 			}
 
@@ -303,7 +303,7 @@ func (n *Nailer) safelySend(obj interface{}, out chan interface{}) error {
 	case <-n.Terminating():
 		return io.EOF
 	case out <- obj:
-		if tracer.Enabled() {
+		if n.tracer.Enabled() {
 			n.logger.Debug("forwarded element to out channel")
 		}
 	}
