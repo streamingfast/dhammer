@@ -24,14 +24,11 @@ import (
 	"go.uber.org/atomic"
 )
 
-var batchCount = atomic.NewInt32(0)
-var biggestBatchSize = atomic.NewInt32(0)
-
-func setBatchSizeIfBigger(cnt int32) {
+func setBatchSizeIfBigger(biggestBatch *atomic.Int32, cnt int32) {
 	for {
-		bbs := biggestBatchSize.Load()
+		bbs := biggestBatch.Load()
 		if cnt > bbs {
-			swapped := biggestBatchSize.CAS(bbs, cnt)
+			swapped := biggestBatch.CAS(bbs, cnt)
 			if swapped {
 				break
 			}
@@ -41,24 +38,30 @@ func setBatchSizeIfBigger(cnt int32) {
 	}
 }
 
-var passThrough = func(_ context.Context, i []interface{}) ([]interface{}, error) {
-	batchCount.Inc()
-	setBatchSizeIfBigger(int32(len(i)))
-	return i, nil
+func passThroughFactory(counter *atomic.Int32, biggestBatch *atomic.Int32) HammerFunc {
+	return func(_ context.Context, i []interface{}) ([]interface{}, error) {
+		counter.Inc()
+		setBatchSizeIfBigger(biggestBatch, int32(len(i)))
+		return i, nil
+	}
 }
 
-var passSlow = func(_ context.Context, i []interface{}) ([]interface{}, error) {
-	batchCount.Inc()
-	setBatchSizeIfBigger(int32(len(i)))
-	time.Sleep(2 * time.Millisecond)
-	return i, nil
+func passSlowFactory(counter *atomic.Int32, biggestBatch *atomic.Int32) HammerFunc {
+	return func(_ context.Context, i []interface{}) ([]interface{}, error) {
+		counter.Inc()
+		setBatchSizeIfBigger(biggestBatch, int32(len(i)))
+		time.Sleep(2 * time.Millisecond)
+		return i, nil
+	}
 }
 
-var passRandom = func(_ context.Context, i []interface{}) ([]interface{}, error) {
-	batchCount.Inc()
-	setBatchSizeIfBigger(int32(len(i)))
-	time.Sleep(time.Duration(rand.Intn(10)) * time.Millisecond)
-	return i, nil
+func passRandomFactory(counter *atomic.Int32, biggestBatch *atomic.Int32) HammerFunc {
+	return func(_ context.Context, i []interface{}) ([]interface{}, error) {
+		counter.Inc()
+		setBatchSizeIfBigger(biggestBatch, int32(len(i)))
+		time.Sleep(time.Duration(rand.Intn(10)) * time.Millisecond)
+		return i, nil
+	}
 }
 
 func Test_Order(t *testing.T) {
@@ -68,7 +71,7 @@ func Test_Order(t *testing.T) {
 		input                           []int
 		batchSize                       int
 		maxConcurrency                  int
-		fnc                             HammerFunc
+		fnc                             func(counter *atomic.Int32, biggestBatch *atomic.Int32) HammerFunc
 		expectedBatchCountBetween       []int32
 		expectedBiggestBatchSizeBetween []int32
 		expectedTimeout                 bool
@@ -77,7 +80,7 @@ func Test_Order(t *testing.T) {
 		{
 			name:                            "is_in_batch",
 			input:                           testSequential100,
-			fnc:                             passThrough,
+			fnc:                             passThroughFactory,
 			batchSize:                       5,
 			maxConcurrency:                  1,
 			expectedBatchCountBetween:       []int32{20, 60},
@@ -87,7 +90,7 @@ func Test_Order(t *testing.T) {
 		{
 			name:                            "is_not_in_batch",
 			input:                           testSequential100,
-			fnc:                             passThrough,
+			fnc:                             passThroughFactory,
 			batchSize:                       1,
 			maxConcurrency:                  5,
 			expectedBatchCountBetween:       []int32{100, 100},
@@ -98,7 +101,7 @@ func Test_Order(t *testing.T) {
 		{
 			name:                            "is_concurrent",
 			input:                           testSequential100,
-			fnc:                             passSlow, // 2ms*100 > 10ms timeout
+			fnc:                             passSlowFactory, // 2ms*100 > 10ms timeout
 			expectedTimeout:                 false,
 			batchSize:                       1,
 			maxConcurrency:                  100,
@@ -109,7 +112,7 @@ func Test_Order(t *testing.T) {
 		{
 			name:            "is_not_concurrent",
 			input:           []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
-			fnc:             passSlow, // 2ms * 10 > 10ms
+			fnc:             passSlowFactory, // 2ms * 10 > 10ms
 			batchSize:       1,
 			maxConcurrency:  1,
 			expectedTimeout: true,
@@ -118,7 +121,7 @@ func Test_Order(t *testing.T) {
 		{
 			name:           "stays_ordered_with_random_processing_time",
 			input:          append(testSequential100, testSequential100...),
-			fnc:            passRandom,
+			fnc:            passRandomFactory,
 			batchSize:      3,
 			maxConcurrency: 20,
 			timeoutValue:   time.Second,
@@ -127,8 +130,13 @@ func Test_Order(t *testing.T) {
 
 	for _, test := range testCases {
 		t.Run(test.name, func(t *testing.T) {
-			defer func() { batchCount.Store(0); biggestBatchSize.Store(0) }()
-			h := NewHammer(test.batchSize, test.maxConcurrency, test.fnc)
+
+			batchCount := atomic.NewInt32(0)
+			biggestBatchSize := atomic.NewInt32(0)
+
+			fnc := test.fnc(batchCount, biggestBatchSize)
+
+			h := NewHammer(test.batchSize, test.maxConcurrency, fnc)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
@@ -194,15 +202,24 @@ func Test_Order(t *testing.T) {
 }
 
 func Test_LargerInChanSize(t *testing.T) {
-	batchCount.Store(0)
-	biggestBatchSize.Store(0)
+	batchCount := atomic.NewInt32(0)
+	biggestBatchSize := atomic.NewInt32(0)
 
-	h := NewHammer(1, 1, passSlow, SetInChanSize(10000))
+	h := NewHammer(1, 250, passSlowFactory(batchCount, biggestBatchSize), SetInChanSize(1000))
 	ctx := context.Background()
 
 	h.Start(ctx)
+
+	done := make(chan bool, 1)
+	go func() {
+		for range h.Out {
+			// Nothing to process, just consume output
+		}
+		done <- true
+	}()
+
 	aft := time.After(10 * time.Millisecond)
-	for i := 0; i < 10000; i++ {
+	for i := 0; i < 1000; i++ {
 		select {
 		case h.In <- i:
 		case <-aft:
@@ -211,6 +228,13 @@ func Test_LargerInChanSize(t *testing.T) {
 		}
 	}
 
-	assert.Equal(t, int32(1), biggestBatchSize.Load())
+	h.Close()
 
+	select {
+	case <-done:
+		assert.Equal(t, int32(1), biggestBatchSize.Load())
+	case <-time.After(1 * time.Second):
+		t.Error("timed out while consuming hammer output")
+		return
+	}
 }

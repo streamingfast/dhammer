@@ -11,17 +11,20 @@ import (
 )
 
 var testSequential100 = []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99}
-var processedCount = atomic.NewInt32(0)
 
-var testNailerPassThrough = func(_ context.Context, i int) (int, error) {
-	processedCount.Inc()
-	return i, nil
+func testNailerPassThroughFactory(counter *atomic.Int32) NailerFunc[int, int] {
+	return func(_ context.Context, i int) (int, error) {
+		counter.Inc()
+		return i, nil
+	}
 }
 
-var testNailerPassSlow = func(_ context.Context, i int) (int, error) {
-	processedCount.Inc()
-	time.Sleep(10 * time.Millisecond)
-	return i, nil
+func testNailerPassSlowFactory(counter *atomic.Int32) NailerFunc[int, int] {
+	return func(_ context.Context, i int) (int, error) {
+		counter.Inc()
+		time.Sleep(10 * time.Millisecond)
+		return i, nil
+	}
 }
 
 func Test_Nailer(t *testing.T) {
@@ -29,8 +32,8 @@ func Test_Nailer(t *testing.T) {
 		name                   string
 		inputs                 []int
 		maxConcurrency         int
-		fnc                    NailerFunc[int, int]
-		startWithPushAll       bool
+		fncFactory             func(counter *atomic.Int32) NailerFunc[int, int]
+		useExecuteAll          bool
 		expectedTimeout        bool
 		expectedProcessedCount int32
 		timeoutValue           time.Duration
@@ -38,7 +41,7 @@ func Test_Nailer(t *testing.T) {
 		{
 			name:                   "is_in_batch",
 			inputs:                 testSequential100,
-			fnc:                    testNailerPassThrough,
+			fncFactory:             testNailerPassThroughFactory,
 			maxConcurrency:         3,
 			expectedProcessedCount: int32(len(testSequential100)),
 			timeoutValue:           time.Second * 10,
@@ -46,7 +49,7 @@ func Test_Nailer(t *testing.T) {
 		{
 			name:            "will_timeout",
 			inputs:          []int{0, 1, 2, 3, 4, 5, 6, 7, 9, 10},
-			fnc:             testNailerPassSlow, // 2ms * 10 > 10ms
+			fncFactory:      testNailerPassSlowFactory, // 2ms * 10 > 10ms
 			maxConcurrency:  3,
 			expectedTimeout: true,
 			timeoutValue:    time.Millisecond * 8,
@@ -54,8 +57,8 @@ func Test_Nailer(t *testing.T) {
 		{
 			name:                   "is_in_batch_with_push_all",
 			inputs:                 testSequential100,
-			fnc:                    testNailerPassThrough,
-			startWithPushAll:       true,
+			fncFactory:             testNailerPassThroughFactory,
+			useExecuteAll:          true,
 			maxConcurrency:         3,
 			expectedProcessedCount: int32(len(testSequential100)),
 			timeoutValue:           time.Second * 10,
@@ -64,13 +67,15 @@ func Test_Nailer(t *testing.T) {
 
 	for _, test := range testCases {
 		t.Run(test.name, func(t *testing.T) {
-			defer func() { processedCount.Store(0) }()
-			n := NewNailer(test.maxConcurrency, test.fnc)
+			counter := atomic.NewInt32(0)
+			fnc := test.fncFactory(counter)
+
+			n := NewNailer(test.maxConcurrency, fnc)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
-			if test.startWithPushAll {
-				n.PushAll(ctx, test.inputs)
+			if test.useExecuteAll {
+				n.ExecuteAll(ctx, test.inputs)
 			} else {
 				n.Start(ctx)
 				go func() {
@@ -106,7 +111,7 @@ func Test_Nailer(t *testing.T) {
 				assert.Equal(t, test.inputs, output)
 			}
 
-			assert.Equal(t, test.expectedProcessedCount, processedCount.Load())
+			assert.Equal(t, test.expectedProcessedCount, counter.Load())
 		})
 	}
 }
@@ -115,12 +120,14 @@ func Test_Drain(t *testing.T) {
 	in := testSequential100
 
 	t.Run("testing drain function", func(t *testing.T) {
-		n := NewNailer(1, testNailerPassThrough)
+		counter := atomic.NewInt32(0)
+
+		n := NewNailer(1, testNailerPassThroughFactory(counter))
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		n.PushAll(ctx, in)
 		n.Drain()
-		assert.Equal(t, int32(100), processedCount.Load())
+		assert.Equal(t, int32(100), counter.Load())
 	})
 }
 
@@ -128,7 +135,7 @@ func TestNailer_WaitUntilEmpty(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	n := NewNailer(2, testNailerPassSlow, NailerDiscardAll())
+	n := NewNailer(2, testNailerPassSlowFactory(atomic.NewInt32(0)), NailerDiscardAll())
 	n.Start(ctx)
 
 	n.in <- 1

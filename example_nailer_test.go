@@ -33,7 +33,8 @@ func ExampleNailer() {
 	<-done
 
 	fmt.Println("Completed")
-	// Output: Received 2
+	// Output:
+	// Received 2
 	// Received 4
 	// Received 6
 	// Received 8
