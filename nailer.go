@@ -9,69 +9,88 @@ import (
 	"go.uber.org/zap"
 )
 
-type Nailer struct {
-	*shutter.Shutter
-	ctx          context.Context
-	In           chan interface{}
-	Out          chan interface{}
-	decoupler    chan chan interface{}
-	nailerFunc   NailerFunc
-	checkIfEmpty chan bool
-	discardAll   bool
-
-	logger *zap.Logger
-	tracer logging.Tracer
+// We needed to come up with a non-generic struct to contain the config
+// values as otherwise, we had to generify [NailerOption] and it caused
+// the library consumer to adjust for it which was not ergonomic.
+type nailerConfig struct {
+	discardAll bool
+	logger     *zap.Logger
+	tracer     logging.Tracer
 }
 
-type NailerFunc func(context.Context, interface{}) (interface{}, error)
-type NailerOption = func(h *Nailer)
+type Nailer[T any, R any] struct {
+	*shutter.Shutter
+	ctx          context.Context
+	in           chan T
+	Out          chan R
+	decoupler    chan chan *R
+	nailerFunc   NailerFunc[T, R]
+	checkIfEmpty chan bool
+
+	discardAll bool
+	logger     *zap.Logger
+	tracer     logging.Tracer
+}
+
+type NailerFunc[T any, R any] func(context.Context, T) (R, error)
+
+// NailerOption represents a configuration option that be passed to [NewNailer].
+type NailerOption func(config *nailerConfig)
 
 func NailerDiscardAll() NailerOption {
-	return func(n *Nailer) {
+	return func(n *nailerConfig) {
 		n.discardAll = true
 	}
 }
 
 func NailerLogger(logger *zap.Logger) NailerOption {
-	return func(n *Nailer) {
+	return func(n *nailerConfig) {
 		n.logger = logger
 	}
 }
 
 func NailerTracer(tracer logging.Tracer) NailerOption {
-	return func(n *Nailer) {
+	return func(n *nailerConfig) {
 		n.tracer = tracer
 	}
 }
 
-func NewNailer(maxConcurrency int, nailerFunc NailerFunc, options ...NailerOption) *Nailer {
-	nailer := &Nailer{
+func NewNailer[T any, R any](maxConcurrency int, nailerFunc NailerFunc[T, R], options ...NailerOption) *Nailer[T, R] {
+	nailer := &Nailer[T, R]{
 		Shutter:      shutter.New(),
-		In:           make(chan interface{}, 1),
-		Out:          make(chan interface{}),
-		decoupler:    make(chan chan interface{}, maxConcurrency),
+		in:           make(chan T, 1),
+		Out:          make(chan R),
+		decoupler:    make(chan chan *R, maxConcurrency),
 		checkIfEmpty: make(chan bool),
 		nailerFunc:   nailerFunc,
-		logger:       zlog,
-		tracer:       tracer,
 	}
 
-	for _, option := range options {
-		option(nailer)
+	config := nailerConfig{
+		logger: zlog,
+		tracer: tracer,
 	}
+	for _, option := range options {
+		option(&config)
+	}
+
+	nailer.discardAll = config.discardAll
+	nailer.logger = config.logger
+	nailer.tracer = config.tracer
 
 	return nailer
 }
 
-func (n *Nailer) Start(ctx context.Context) {
+// Start should be call prior sending any job to the nailer, it **must** be started
+// otherwise nothing will work properly.
+func (n *Nailer[T, R]) Start(ctx context.Context) {
 	n.ctx = ctx
 	go n.runInput()
 	go n.linearizeOutput()
 }
 
-func (n *Nailer) Push(ctx context.Context, in interface{}) {
+func (n *Nailer[T, R]) Push(ctx context.Context, in T) {
 	select {
-	case n.In <- in:
+	case n.in <- in:
 	case <-n.Terminating():
 		n.logger.Debug("unable to push since nailer is terminating")
 		return
@@ -84,24 +103,67 @@ func (n *Nailer) Push(ctx context.Context, in interface{}) {
 	}
 }
 
-func (n *Nailer) PushAll(ctx context.Context, ins []interface{}) {
+// Deprecated Renamed to ExecuteAll, going to be replaced by a different implementation
+// at a later time.
+func (n *Nailer[T, R]) PushAll(ctx context.Context, ins []T) {
+	n.ExecuteAll(ctx, ins)
+}
+
+// ExecuteAll is going to [Start] the nailer, push all `ins` into it and then call
+// [Close] to stop the nailer process. It's a shortcut method if you want to execute
+// pre-made jobs rapidly.
+func (n *Nailer[T, R]) ExecuteAll(ctx context.Context, ins []T) {
 	n.Start(ctx)
 	go func() {
 		for _, in := range ins {
-			n.In <- in
+			n.in <- in
 		}
 		n.Close()
 	}()
 }
 
 // WaitUntilEmpty waits until no more input nor active inflight operations is in progress
-// blocking the current goroutine along the way. The output must be consumed for this method to
-// work. You should use `NailerDiscardall()` option if you don't care about the output.
+// blocking along the way. This method is only useful if you need to wait until all output
+// has been sent in `nailer.Out` and want to re-use the same nailer. If you simply need to
+// wait until all elements has been processed, you should call `Close()` and wait until your
+// last element has been processed:
 //
-// **Important** You are responsible of ensuring that no new inputs are being push while waiting.
-// This method does not protect against such case right now and could unblock just before a new
-// input is pushed which would make the instance "non-emtpy" anymore.
-func (n *Nailer) WaitUntilEmpty(ctx context.Context) {
+// ```
+// nailer := dhammer.NewNailer(4, func(ctx context.Context, i int) (int, error) { return i * 2, nil })
+// nailer.Start()
+//
+// done := make(chan bool, 1)
+//
+//	go func() {
+//		  for out := range nailer.Out {
+//		    // Do something with out
+//		  }
+//
+//		  done <- true
+//		}()
+//
+//	for i := range []int{1, 2, 3, 4, 5, 6, 7, 8} {
+//	  nailer.Push(ctx, i)
+//	}
+//
+// nailer.Close()
+// <-done
+// ```
+//
+// **Important** It's really important to understand that 'WaitUntilEmpty' only knowns when last
+// output has been sent to 'nailer.Out' channel for consumption and not **when** the output processor
+// reading 'nailer.Out' as finished processing the last element of the channel! If you need to wait
+// until empty the queue is empty **and** that your output processor fully processed the last item,
+// you should add some waiting barrier based that is lifted once your last element has been properly
+// processed.
+//
+// This method works only if output is consumed.
+func (n *Nailer[T, R]) WaitUntilEmpty(ctx context.Context) {
+	n.logger.Debug("waiting until fully empty")
+	defer func() {
+		n.logger.Debug("empty state reached")
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -109,17 +171,18 @@ func (n *Nailer) WaitUntilEmpty(ctx context.Context) {
 		case <-n.Terminating():
 			return
 		case n.checkIfEmpty <- true:
-			if len(n.In) == 0 && len(n.decoupler) == 0 {
+			if len(n.in) == 0 && len(n.decoupler) == 0 {
 				return
 			}
 		}
 	}
 }
 
-func (n *Nailer) Drain() {
+// Drain fully consumes the output channel from the nailer, discarding it right away.
+func (n *Nailer[T, R]) Drain() {
 	go func() {
-		for {
-			<-n.Out
+		for range n.Out {
+			// Simply consume everything out
 		}
 	}()
 
@@ -136,13 +199,16 @@ func (n *Nailer) Drain() {
 	}
 }
 
-func (n *Nailer) Close() {
-	close(n.In)
+// Close should be called when the nailer is no more needed and closes all
+// started goroutine.
+func (n *Nailer[T, R]) Close() {
+	n.logger.Debug("closing input channel")
+	close(n.in)
 }
 
-func (n *Nailer) runInput() {
+func (n *Nailer[T, R]) runInput() {
 	n.logger.Debug("running input consumer")
-	var toProcess interface{}
+	var toProcess T
 	closed := false
 	for {
 		select {
@@ -153,7 +219,7 @@ func (n *Nailer) runInput() {
 		case <-n.Terminating():
 			n.logger.Debug("input reader shutter terminating")
 			return
-		case next, ok := <-n.In:
+		case next, ok := <-n.in:
 			if !ok {
 				n.logger.Debug("input reader channel closed")
 				closed = true
@@ -172,9 +238,9 @@ func (n *Nailer) runInput() {
 			return
 		}
 
-		var processOut chan interface{}
+		var processOut chan *R
 		if !n.discardAll {
-			processOut = make(chan interface{}, 1)
+			processOut = make(chan *R, 1)
 		}
 
 		select {
@@ -191,7 +257,7 @@ func (n *Nailer) runInput() {
 	}
 }
 
-func (n *Nailer) processInput(in interface{}, out chan interface{}) {
+func (n *Nailer[T, R]) processInput(in T, out chan *R) {
 	defer func() {
 		if out != nil {
 			close(out)
@@ -215,14 +281,14 @@ func (n *Nailer) processInput(in interface{}, out chan interface{}) {
 		return
 	case <-n.Terminating():
 		return
-	case out <- output:
+	case out <- &output:
 		if n.tracer.Enabled() {
 			n.logger.Debug("processed input, sent result to output channel")
 		}
 	}
 }
 
-func (n *Nailer) linearizeOutput() {
+func (n *Nailer[T, R]) linearizeOutput() {
 	n.logger.Debug("starting linearize output routine")
 
 	defer func() {
@@ -262,7 +328,7 @@ func (n *Nailer) linearizeOutput() {
 	}
 }
 
-func (n *Nailer) outputSingleBatch(ch chan interface{}) error {
+func (n *Nailer[T, R]) outputSingleBatch(ch chan *R) error {
 	if n.tracer.Enabled() {
 		n.logger.Debug("received output channel from decoupler, waiting for channel to have a value")
 	}
@@ -288,14 +354,14 @@ func (n *Nailer) outputSingleBatch(ch chan interface{}) error {
 				n.logger.Debug("output channel resolved to a value, sending it to consumer")
 			}
 
-			if err := n.safelySend(obj, n.Out); err != nil {
+			if err := n.safelySend(*obj, n.Out); err != nil {
 				return err
 			}
 		}
 	}
 }
 
-func (n *Nailer) safelySend(obj interface{}, out chan interface{}) error {
+func (n *Nailer[T, R]) safelySend(obj R, out chan R) error {
 	select {
 	case <-n.ctx.Done():
 		n.Shutdown(n.ctx.Err())
@@ -309,3 +375,7 @@ func (n *Nailer) safelySend(obj interface{}, out chan interface{}) error {
 	}
 	return nil
 }
+
+// func isZero[T any](v T) bool {
+// 	return reflect.ValueOf(&v).Elem().IsZero()
+// }
