@@ -259,10 +259,10 @@ func (n *Nailer[T, R]) runInput() {
 			return
 		case n.decoupler <- processOut:
 			<-availableWorkers
-			go func() {
-				n.processInput(toProcess, processOut)
+			go func(in T, out chan *R) {
+				n.processInput(in, out)
 				availableWorkers <- struct{}{}
-			}()
+			}(toProcess, processOut)
 		}
 	}
 }
