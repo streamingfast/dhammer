@@ -20,12 +20,13 @@ type nailerConfig struct {
 
 type Nailer[T any, R any] struct {
 	*shutter.Shutter
-	ctx          context.Context
-	in           chan T
-	Out          chan R
-	decoupler    chan chan *R
-	nailerFunc   NailerFunc[T, R]
-	checkIfEmpty chan bool
+	ctx            context.Context
+	in             chan T
+	Out            chan R
+	decoupler      chan chan *R
+	nailerFunc     NailerFunc[T, R]
+	checkIfEmpty   chan bool
+	maxConcurrency int
 
 	discardAll bool
 	logger     *zap.Logger
@@ -57,12 +58,13 @@ func NailerTracer(tracer logging.Tracer) NailerOption {
 
 func NewNailer[T any, R any](maxConcurrency int, nailerFunc NailerFunc[T, R], options ...NailerOption) *Nailer[T, R] {
 	nailer := &Nailer[T, R]{
-		Shutter:      shutter.New(),
-		in:           make(chan T, 1),
-		Out:          make(chan R),
-		decoupler:    make(chan chan *R, maxConcurrency),
-		checkIfEmpty: make(chan bool),
-		nailerFunc:   nailerFunc,
+		Shutter:        shutter.New(),
+		in:             make(chan T, 1),
+		Out:            make(chan R),
+		decoupler:      make(chan chan *R, 20000),
+		checkIfEmpty:   make(chan bool),
+		maxConcurrency: maxConcurrency,
+		nailerFunc:     nailerFunc,
 	}
 
 	config := nailerConfig{
@@ -210,6 +212,10 @@ func (n *Nailer[T, R]) runInput() {
 	n.logger.Debug("running input consumer")
 	var toProcess T
 	closed := false
+	availableWorkers := make(chan struct{}, n.maxConcurrency)
+	for i := 0; i < n.maxConcurrency; i++ {
+		availableWorkers <- struct{}{}
+	}
 	for {
 		select {
 		case <-n.ctx.Done():
@@ -252,7 +258,11 @@ func (n *Nailer[T, R]) runInput() {
 			n.logger.Debug("input reader batch out shutter terminating")
 			return
 		case n.decoupler <- processOut:
-			go n.processInput(toProcess, processOut)
+			<-availableWorkers
+			go func() {
+				n.processInput(toProcess, processOut)
+				availableWorkers <- struct{}{}
+			}()
 		}
 	}
 }
